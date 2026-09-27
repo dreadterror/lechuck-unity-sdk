@@ -21,11 +21,12 @@ Generic and self-contained: bring your own game id from the Minijuegos developer
 
 ## Install
 
-Copy (or add as a git package / Asset Store package) into your project:
+Pick one:
 
-```
-Packages/com.lechuck.sdk/
-```
+- **Embedded:** copy the folder into your project as `Packages/com.lechuck.sdk/`.
+- **Git URL:** `Window > Package Manager > + > Add package from git URL…` with your repository URL
+  (append `?path=/subfolder` if the package is not at the repository root).
+- **Asset Store:** import the package from *My Assets*.
 
 ## Usage
 
@@ -50,7 +51,33 @@ void OnGameOver() {
 }
 ```
 
-See `Samples~/RaceExample` for a complete example.
+A complete example (`LeChuckRaceExample`) can be imported from *Package Manager > LeChuck SDK Bridge > Samples > Race game example*.
+
+## API
+
+All members are static on `LeChuck.LeChuckSDK`. Events and callbacks always run on the Unity main thread.
+
+| Member | Description |
+| --- | --- |
+| `Init(LeChuckSettings)` | Loads the SDK with your game id. Idempotent: later calls are ignored. |
+| `event OnReady(LeChuckUser)` | Fired once when the SDK is ready. Handlers added later are called immediately. `user.IsSignedIn` is false for guests / unpublished games. |
+| `IsInitialized`, `IsReady`, `IsEmbedded` | State flags (`IsEmbedded`: running inside a Minijuegos/Miniplay iframe). |
+| `GetUser()` | `LeChuckUser?` with `Id`, `Token`, `Name`; null when not signed in. |
+| `DetectPortal()` | `"miniplay"`, `"minijuegos"` or `"unknown"`. |
+| `SetScore(double)` | One score per game session. |
+| `SetStat(string, double)` | REPLACE semantics: send totals. |
+| `UnlockAchievement(string)` | Unlock + boolean stat, skipped if already unlocked in this browser. |
+| `Flush(Action)` | Waits `flushDelayMs`, then calls back. Use before restart/reload. |
+| `Authenticate(Action<string>)` | POSTs to `authUrl`; returns the raw body or `{"error": ...}`. |
+| `LastError` | Last error reported by the JavaScript bridge, or null. |
+
+Numbers are sent to JavaScript as invariant-culture strings (full `double` precision); NaN/Infinity are ignored.
+
+## Testing in the Editor
+
+Outside WebGL player builds every call is a silent no-op (`Flush` and `Authenticate` still invoke their callbacks), so the same game code runs everywhere.
+
+To exercise your `OnReady` flow in Play Mode, enable **Simulate In Editor** on the settings asset: `Init` then fires `OnReady` after 0.1 s with the user `simulatedUserId` (leave it empty to simulate a guest). The settings inspector shows the live state and has a **Test Init (Play Mode)** button.
 
 ## Publishing notes (Minijuegos)
 
@@ -72,4 +99,4 @@ The plugin never stores or ships your secrets: token validation always happens o
 
 ## License
 
-MIT
+MIT, see [LICENSE.md](LICENSE.md).

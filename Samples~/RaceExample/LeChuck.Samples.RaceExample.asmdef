@@ -1,0 +1,14 @@
+{
+    "name": "LeChuck.Samples.RaceExample",
+    "rootNamespace": "LeChuck.Samples",
+    "references": ["LeChuck.Runtime"],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

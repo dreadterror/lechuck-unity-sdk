@@ -4,15 +4,36 @@
 //
 // Fully generic: the game id is passed at init, no ids or secrets are bundled.
 // The C# side (LeChuckSDK.cs) is the only supported entry point.
+//
+// MIT License — Copyright (c) 2026 LeChuck Bridge contributors
 // ─────────────────────────────────────────────────────────────────────────────
 mergeInto(LibraryManager.library, {
+
+  // Shared bridge state, created lazily at runtime. jslib top-level code runs
+  // at build time inside Emscripten (no `window`), so it must live in a helper.
+  $lechuckState: function () {
+    if (!window.__lechuckBridge) {
+      window.__lechuckBridge = { ready: false, user: null, instance: null, gameId: 0, debug: false, error: '', readyCb: null };
+    }
+    return window.__lechuckBridge;
+  },
+
+  // Returns a heap-allocated UTF-8 copy of a JS string (0 for null). The C#
+  // extern declares a `string` return, so IL2CPP copies and frees the buffer.
+  $lechuckAllocString: function (str) {
+    if (str === null || str === undefined) return 0;
+    var size = lengthBytesUTF8(str) + 1;
+    var ptr = _malloc(size);
+    stringToUTF8(str, ptr, size);
+    return ptr;
+  },
 
   // Injects the vendor SDK script (once) and constructs the API instance.
   // gameIdStr: decimal game id from the Minijuegos developer panel.
   // debugFlag: 1 to enable SDK debug logging.
+  LeChuckBridge_Init__deps: ['$lechuckState'],
   LeChuckBridge_Init: function (gameIdStr, debugFlag) {
-    var B = window.__lechuckBridge;
-    if (!B) return;
+    var B = lechuckState();
     var gameId = parseInt(UTF8ToString(gameIdStr), 10);
     if (!gameId || isNaN(gameId)) { B.error = 'invalid game id'; return; }
     B.gameId = gameId;
@@ -36,7 +57,8 @@ mergeInto(LibraryManager.library, {
             var name = (lc.user && lc.user.getUid ? lc.user.getUid() : null)
               || (lc.user && lc.user.getName ? lc.user.getName() : null)
               || (uid ? 'Player_' + uid : null);
-            B.user = { uid: uid || null, token: tok || null, name: name || null };
+            // Strings only: the C# side parses this with JsonUtility.
+            B.user = { uid: uid ? String(uid) : null, token: tok ? String(tok) : null, name: name ? String(name) : null };
           } catch (e) { B.error = 'user: ' + e; }
           if (B.readyCb) { SendMessage(B.readyCb[0], B.readyCb[1], B.user ? (B.user.uid || '') : ''); }
         });
@@ -54,9 +76,9 @@ mergeInto(LibraryManager.library, {
 
   // 1 once the SDK fired onApiReady (user may still be null when the game is
   // unpublished: Minijuegos only injects mp_api_user_id in published games).
+  LeChuckBridge_IsReady__deps: ['$lechuckState'],
   LeChuckBridge_IsReady: function () {
-    var B = window.__lechuckBridge;
-    return (B && B.ready) ? 1 : 0;
+    return lechuckState().ready ? 1 : 0;
   },
 
   // True when running inside a Minijuegos/Miniplay iframe (regardless of ready).
@@ -73,40 +95,43 @@ mergeInto(LibraryManager.library, {
     return 0;
   },
 
-  // Returns JSON {uid, token, name} or '' when not signed in / not ready.
+  // Returns JSON {uid, token, name} or null when not signed in / not ready.
+  LeChuckBridge_GetUserJson__deps: ['$lechuckState', '$lechuckAllocString'],
   LeChuckBridge_GetUserJson: function () {
-    var B = window.__lechuckBridge;
-    if (!B || !B.user || !B.user.uid) return null;
-    return JSON.stringify(B.user);
+    var B = lechuckState();
+    if (!B.user || !B.user.uid) return 0;
+    return lechuckAllocString(JSON.stringify(B.user));
   },
 
+  // 'miniplay' | 'minijuegos' | 'unknown'.
+  LeChuckBridge_GetPortal__deps: ['$lechuckAllocString'],
   LeChuckBridge_GetPortal: function () {
+    var portal = 'unknown';
     try {
       var a = window.location.ancestorOrigins;
-      if (a && a.length) {
-        if (a[0].indexOf('miniplay.com') >= 0) return 'miniplay';
-        if (a[0].indexOf('minijuegos.com') >= 0) return 'minijuegos';
-      }
-      if (document.referrer) {
-        if (document.referrer.indexOf('miniplay.com') >= 0) return 'miniplay';
-        if (document.referrer.indexOf('minijuegos.com') >= 0) return 'minijuegos';
-      }
+      var r = document.referrer || '';
+      if (a && a.length && a[0].indexOf('miniplay.com') >= 0) portal = 'miniplay';
+      else if (a && a.length && a[0].indexOf('minijuegos.com') >= 0) portal = 'minijuegos';
+      else if (r.indexOf('miniplay.com') >= 0) portal = 'miniplay';
+      else if (r.indexOf('minijuegos.com') >= 0) portal = 'minijuegos';
     } catch (e) {}
-    return 'unknown';
+    return lechuckAllocString(portal);
   },
 
   // One score per game session (SDK contract).
+  LeChuckBridge_SetScore__deps: ['$lechuckState'],
   LeChuckBridge_SetScore: function (scoreStr) {
-    var B = window.__lechuckBridge;
-    if (!B || !B.ready) return;
+    var B = lechuckState();
+    if (!B.ready) return;
     var lc = B.instance || (typeof lechuck !== 'undefined' ? lechuck : null);
     if (lc && lc.set_score) { try { lc.set_score(parseFloat(UTF8ToString(scoreStr))); } catch (e) {} }
   },
 
   // REPLACE semantics: send accumulated totals, never deltas.
+  LeChuckBridge_SetStat__deps: ['$lechuckState'],
   LeChuckBridge_SetStat: function (keyStr, valueStr) {
-    var B = window.__lechuckBridge;
-    if (!B || !B.ready) return;
+    var B = lechuckState();
+    if (!B.ready) return;
     var lc = B.instance || (typeof lechuck !== 'undefined' ? lechuck : null);
     if (lc && lc.stat && lc.stat.put) {
       try { lc.stat.put(function () {}, UTF8ToString(keyStr), parseFloat(UTF8ToString(valueStr))); } catch (e) {}
@@ -114,9 +139,9 @@ mergeInto(LibraryManager.library, {
   },
 
   // Unlock + boolean stat guard, with per-browser double-unlock protection.
+  LeChuckBridge_UnlockAchievement__deps: ['$lechuckState'],
   LeChuckBridge_UnlockAchievement: function (uidStr) {
-    var B = window.__lechuckBridge;
-    if (!B) return;
+    var B = lechuckState();
     var uid = UTF8ToString(uidStr);
     if (!uid) return;
     try {
@@ -132,18 +157,18 @@ mergeInto(LibraryManager.library, {
   },
 
   // Registers a Unity object/method to receive the ready callback (uid or '').
+  LeChuckBridge_SetReadyCallback__deps: ['$lechuckState'],
   LeChuckBridge_SetReadyCallback: function (goName, funcName) {
-    var B = window.__lechuckBridge;
-    if (!B) return;
+    var B = lechuckState();
     B.readyCb = [UTF8ToString(goName), UTF8ToString(funcName)];
-    if (B.ready && B.readyCb) { SendMessage(B.readyCb[0], B.readyCb[1], B.user ? (B.user.uid || '') : ''); }
+    if (B.ready) { SendMessage(B.readyCb[0], B.readyCb[1], B.user ? (B.user.uid || '') : ''); }
   },
 
   // Optional: POST {miniplay_id, token} to a developer-provided auth endpoint.
   // Response body is forwarded verbatim to the Unity method as a string.
+  LeChuckBridge_Authenticate__deps: ['$lechuckState'],
   LeChuckBridge_Authenticate: function (urlStr, goName, funcName) {
-    var B = window.__lechuckBridge;
-    if (!B) return;
+    var B = lechuckState();
     var url = UTF8ToString(urlStr), target = [UTF8ToString(goName), UTF8ToString(funcName)];
     var user = B.user;
     if (!user || !user.uid) { SendMessage(target[0], target[1], JSON.stringify({ error: 'not signed in' })); return; }
@@ -158,22 +183,17 @@ mergeInto(LibraryManager.library, {
   },
 
   // Flush guard: the SDK sends data over async HTTP; give it a beat before the
-  // game resets/reloads, then notify Unity. sendBeacon semantics are handled by
-  // the caller; this is the pragmatic best-effort window (default 500 ms).
+  // game resets/reloads, then notify Unity. This is a pragmatic best-effort
+  // window (default 500 ms, configurable in the settings asset).
   LeChuckBridge_Flush: function (ms, goName, funcName) {
-    var delay = ms;
     var target = [UTF8ToString(goName), UTF8ToString(funcName)];
-    setTimeout(function () { SendMessage(target[0], target[1], '1'); }, delay);
+    setTimeout(function () { SendMessage(target[0], target[1], '1'); }, ms);
   },
 
-  // Diagnostics: last bridge error or ''.
+  // Diagnostics: last bridge error or null.
+  LeChuckBridge_GetError__deps: ['$lechuckState', '$lechuckAllocString'],
   LeChuckBridge_GetError: function () {
-    var B = window.__lechuckBridge;
-    return (B && B.error) ? B.error : null;
+    var B = lechuckState();
+    return B.error ? lechuckAllocString(B.error) : 0;
   }
 });
-
-// Bridge state (created before any call from C#).
-if (!window.__lechuckBridge) {
-  window.__lechuckBridge = { ready: false, user: null, instance: null, gameId: 0, debug: false, error: '', readyCb: null };
-}
