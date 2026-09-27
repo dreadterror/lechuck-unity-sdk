@@ -1,0 +1,14 @@
+{
+    "name": "LeChuck.Editor",
+    "rootNamespace": "LeChuck.Editor",
+    "references": ["LeChuck.Runtime"],
+    "includePlatforms": ["Editor"],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

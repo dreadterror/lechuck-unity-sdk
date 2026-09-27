@@ -1,0 +1,19 @@
+{
+  "name": "com.lechuck.sdk",
+  "version": "0.1.0",
+  "displayName": "LeChuck SDK Bridge (Minijuegos / Miniplay)",
+  "description": "Unity WebGL bridge for the Minijuegos.com / Miniplay.com LeChuck JS SDK. Auth detection, score, stats, achievements and session flush, fully configurable via a settings asset. No keys or IDs bundled: bring your own game ID from the Minijuegos developer panel.",
+  "unity": "2022.3",
+  "author": {
+    "name": "LeChuck Bridge contributors"
+  },
+  "license": "MIT",
+  "keywords": ["minijuegos", "miniplay", "lechuck", "webgl", "leaderboard", "achievements", "portal"],
+  "samples": [
+    {
+      "displayName": "Race game example",
+      "description": "Minimal example: init, submit score on game over, unlock achievements, flush before restart.",
+      "path": "Samples~/RaceExample"
+    }
+  ]
+}
