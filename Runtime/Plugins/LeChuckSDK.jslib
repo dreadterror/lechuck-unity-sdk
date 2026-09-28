@@ -13,7 +13,7 @@ mergeInto(LibraryManager.library, {
   // at build time inside Emscripten (no `window`), so it must live in a helper.
   $lechuckState: function () {
     if (!window.__lechuckBridge) {
-      window.__lechuckBridge = { ready: false, user: null, instance: null, gameId: 0, debug: false, error: '', readyCb: null };
+      window.__lechuckBridge = { ready: false, loading: false, user: null, instance: null, gameId: 0, debug: false, error: '', readyCb: null };
     }
     return window.__lechuckBridge;
   },
@@ -28,12 +28,24 @@ mergeInto(LibraryManager.library, {
     return ptr;
   },
 
+  // Strict portal match by parsed hostname: exact host or real subdomain only.
+  // A lookalike origin such as miniplay.com.attacker.example does not match.
+  $lechuckPortalOf: function (urlStr) {
+    try {
+      var h = new URL(urlStr).hostname.toLowerCase();
+      if (h === 'miniplay.com' || h.endsWith('.miniplay.com')) return 'miniplay';
+      if (h === 'minijuegos.com' || h.endsWith('.minijuegos.com')) return 'minijuegos';
+    } catch (e) {}
+    return '';
+  },
+
   // Injects the vendor SDK script (once) and constructs the API instance.
   // gameIdStr: decimal game id from the Minijuegos developer panel.
   // debugFlag: 1 to enable SDK debug logging.
   LeChuckBridge_Init__deps: ['$lechuckState'],
   LeChuckBridge_Init: function (gameIdStr, debugFlag) {
     var B = lechuckState();
+    if (B.loading) return; // re-entry guard: never inject the vendor script twice
     var gameId = parseInt(UTF8ToString(gameIdStr), 10);
     if (!gameId || isNaN(gameId)) { B.error = 'invalid game id'; return; }
     B.gameId = gameId;
@@ -66,11 +78,12 @@ mergeInto(LibraryManager.library, {
     }
 
     if (typeof LeChuckAPI !== 'undefined') { construct(); return; }
+    B.loading = true;
     var s = document.createElement('script');
     s.src = 'https://ssl.minijuegosgratis.com/lechuck/js/latest.js';
     s.async = true;
-    s.onload = construct;
-    s.onerror = function () { B.error = 'failed to load SDK script'; };
+    s.onload = function () { B.loading = false; construct(); };
+    s.onerror = function () { B.loading = false; B.error = 'failed to load SDK script'; };
     document.head.appendChild(s);
   },
 
@@ -82,15 +95,14 @@ mergeInto(LibraryManager.library, {
   },
 
   // True when running inside a Minijuegos/Miniplay iframe (regardless of ready).
+  LeChuckBridge_IsEmbedded__deps: ['$lechuckPortalOf'],
   LeChuckBridge_IsEmbedded: function () {
     try {
       var a = window.location.ancestorOrigins;
       if (a && a.length) {
-        for (var i = 0; i < a.length; i++) {
-          if (a[i].indexOf('miniplay.com') >= 0 || a[i].indexOf('minijuegos.com') >= 0) return 1;
-        }
+        for (var i = 0; i < a.length; i++) { if (lechuckPortalOf(a[i])) return 1; }
       }
-      if (document.referrer && (document.referrer.indexOf('miniplay.com') >= 0 || document.referrer.indexOf('minijuegos.com') >= 0)) return 1;
+      if (document.referrer && lechuckPortalOf(document.referrer)) return 1;
     } catch (e) {}
     return 0;
   },
@@ -104,16 +116,18 @@ mergeInto(LibraryManager.library, {
   },
 
   // 'miniplay' | 'minijuegos' | 'unknown'.
-  LeChuckBridge_GetPortal__deps: ['$lechuckAllocString'],
+  LeChuckBridge_GetPortal__deps: ['$lechuckAllocString', '$lechuckState', '$lechuckPortalOf'],
   LeChuckBridge_GetPortal: function () {
     var portal = 'unknown';
     try {
       var a = window.location.ancestorOrigins;
-      var r = document.referrer || '';
-      if (a && a.length && a[0].indexOf('miniplay.com') >= 0) portal = 'miniplay';
-      else if (a && a.length && a[0].indexOf('minijuegos.com') >= 0) portal = 'minijuegos';
-      else if (r.indexOf('miniplay.com') >= 0) portal = 'miniplay';
-      else if (r.indexOf('minijuegos.com') >= 0) portal = 'minijuegos';
+      var cands = [];
+      if (a && a.length) { for (var i = 0; i < a.length; i++) cands.push(a[i]); }
+      if (document.referrer) cands.push(document.referrer);
+      for (var j = 0; j < cands.length; j++) {
+        var p = lechuckPortalOf(cands[j]);
+        if (p) { portal = p; break; }
+      }
     } catch (e) {}
     return lechuckAllocString(portal);
   },
@@ -138,22 +152,28 @@ mergeInto(LibraryManager.library, {
     }
   },
 
-  // Unlock + boolean stat guard, with per-browser double-unlock protection.
+  // Unlock + boolean stat guard. Double-unlock protection is scoped per game
+  // and per user, and the local mark is written only after the SDK call went
+  // out: a pre-ready or failed call must not poison the cache permanently.
   LeChuckBridge_UnlockAchievement__deps: ['$lechuckState'],
   LeChuckBridge_UnlockAchievement: function (uidStr) {
     var B = lechuckState();
     var uid = UTF8ToString(uidStr);
-    if (!uid) return;
-    try {
-      var done = {};
-      try { JSON.parse(localStorage.getItem('__lechuck_unlocked_v1') || '[]').forEach(function (k) { done[k] = 1; }); } catch (e) {}
-      if (done[uid]) return;
-      done[uid] = 1;
-      localStorage.setItem('__lechuck_unlocked_v1', JSON.stringify(Object.keys(done)));
-    } catch (e) {}
+    if (!uid || !B.ready) { if (uid && !B.ready) B.error = 'unlock before ready'; return; }
     var lc = B.instance || (typeof lechuck !== 'undefined' ? lechuck : null);
-    if (lc && lc.unlockAchievement) { try { lc.unlockAchievement(uid); } catch (e) {} }
-    if (lc && lc.stat && lc.stat.put) { try { lc.stat.put(function () {}, uid, 1); } catch (e) {} }
+    if (!lc || !lc.unlockAchievement) { B.error = 'sdk unavailable for unlock'; return; }
+    var scope = (B.gameId || 0) + ':' + ((B.user && B.user.uid) || 'guest');
+    var all = {};
+    try { all = JSON.parse(localStorage.getItem('__lechuck_unlocked_v2') || '{}') || {}; } catch (e) { all = {}; }
+    var bag = all[scope] || (all[scope] = {});
+    if (bag[uid]) return;
+    var sent = true;
+    try { lc.unlockAchievement(uid); } catch (e) { sent = false; B.error = 'unlock: ' + e; }
+    if (sent && lc.stat && lc.stat.put) { try { lc.stat.put(function () {}, uid, 1); } catch (e) {} }
+    if (sent) {
+      bag[uid] = 1;
+      try { localStorage.setItem('__lechuck_unlocked_v2', JSON.stringify(all)); } catch (e) {}
+    }
   },
 
   // Registers a Unity object/method to receive the ready callback (uid or '').
@@ -182,9 +202,10 @@ mergeInto(LibraryManager.library, {
       .catch(function (e) { SendMessage(target[0], target[1], JSON.stringify({ error: String(e) })); });
   },
 
-  // Flush guard: the SDK sends data over async HTTP; give it a beat before the
-  // game resets/reloads, then notify Unity. This is a pragmatic best-effort
-  // window (default 500 ms, configurable in the settings asset).
+  // Flush guard: the SDK sends data over async HTTP and exposes no delivery
+  // callback, so this is a best-effort window (default 500 ms, configurable in
+  // the settings asset). The Unity callback means the window elapsed, NOT that
+  // the server confirmed storage.
   LeChuckBridge_Flush: function (ms, goName, funcName) {
     var target = [UTF8ToString(goName), UTF8ToString(funcName)];
     setTimeout(function () { SendMessage(target[0], target[1], '1'); }, ms);
